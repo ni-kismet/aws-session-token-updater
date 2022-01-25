@@ -194,7 +194,7 @@ def process_arguments() -> None:
         dest="account_id",
         type=str,
         default=AWS_ACCOUNT_ID,
-        help=f"The account you wish to get a session token from [{AWS_ACCOUNT_ID}].",
+        help=f"The id of the account to get a session token for [{AWS_ACCOUNT_ID}].",
     )
     parser.add_argument(
         "--config-path",
@@ -275,6 +275,7 @@ def initialize_globals() -> None:
     global KUBECONFIG_PATH
     global LOG_LEVEL
     global MFA_SERIAL_NUMBER
+    global MFA_TOKEN
     global OUTPUT_FORMAT
     global PROFILE_NAME
     global REGION_NAME
@@ -288,6 +289,7 @@ def initialize_globals() -> None:
     CREDENTIALS_PATH = ARGS.credentials_path
     KUBECONFIG_PATH = ARGS.kubeconfig
     LOG_LEVEL = ARGS.log_level
+    MFA_TOKEN = ARGS.mfa_token
     OUTPUT_FORMAT = ARGS.output_format
     PROFILE_NAME = ARGS.profile_name
     REGION_NAME = ARGS.region_name
