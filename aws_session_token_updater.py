@@ -1,3 +1,15 @@
+"""aws_session_token_updater.py
+
+    Classes:
+        AWSSessionTokenUpdater: The main class.
+        SessionTokenError(Exception): Custom error for token input issues.
+        RetryWarning(Exception): Custom warning for retry catching.
+        UserInputError(Exception): Custom error for user input issues.
+
+    Methods:
+        retry_on_none_or_empty(decorated_function):
+
+"""
 import argparse
 import configparser
 import functools
@@ -6,71 +18,92 @@ import logging
 import subprocess
 import sys
 from os.path import expanduser
-from typing import Tuple
+from typing import Tuple, Any, Callable, List, Dict, Optional
 
 
-class SessionTokenError(Exception):
-    """There was an error getting an AWS session token."""
+def retry_on_none_or_empty(
+        decorated_function,
+) -> Callable[[List[Any], Dict[Any, Any]], Any]:
+    """Decorator for providing retries of a function whose output is None or empty.
 
+    Args:
+        decorated_function: The function which this decorator was applied to.
 
-class RetryWarning(Exception):
-    """There was an issue, so we're retrying."""
+    Returns:
+        The internal function which actually does the looping.
+    """
 
+    @functools.wraps(decorated_function)
+    def _retry_on_none_or_empty(*args, **kwargs) -> Any:
+        """Wrap the decorated function.
 
-class UserInputError(Exception):
-    """The user failed to enter valid input in the set number of tries."""
+        This function wraps the decorated function and passes any positional and/or keyword
+        arguments along to it.
 
-
-def input_looper(func):
-    @functools.wraps(func)
-    def wrapper_input_looper(*args, **kwargs) -> str:
-        """
+        In order to provide flexibility, the function also checks kwargs for the following:
+            retry_count (int):
+                The number of times to retry getting the token.
+            empty_value_message (str):
+                The message to display in the event of a blank input.
+            empty_value_log_message (str):
+                The message to log in the event of a blank input.
 
         Args:
-            *args:
-            **kwargs:
+            args: Positional arguments for the decorated function.
 
-        Notes:
-            This decorator checks the output for the following:
-                retry_count (int): The number of times to retry getting the token.
-                empty_value_message (str):
-                empty_value_log_message (str):
+        Keyword Args:
+            kwargs: Keyword arguments for the decorated function.
+
         Returns:
-
+            (Any): The output from the decorated function.
         """
         retry_count = kwargs.get("retry_count", 3)
-        empty_value_message = kwargs.get(
-            "empty_value_message", "This input may not be empty."
-        )
+        empty_value_message = kwargs.get("empty_value_message", "This input may not be empty.")
         empty_value_log_message = kwargs.get(
             "empty_value_log_message", "The user provided an empty value."
         )
         result: str = ""
-        for try_num in range(retry_count, 0, -1):
-            result = func(*args, **kwargs)
+        for try_num in range(retry_count, -1, -1):
+            result = decorated_function(*args, **kwargs)
             if not result:
                 print(empty_value_message, f"{try_num} tries remain.")
                 logging.debug(empty_value_log_message)
-                if try_num <= 0:
+                if try_num < 1:
                     logging.debug("User ran out of input tries.")
                     raise UserInputError()
                 continue
             break
         return result
 
-    return wrapper_input_looper
+    return _retry_on_none_or_empty
+
+
+class RetryWarning(Exception):
+    """There was an issue, so we're retrying."""
+
+
+class SessionTokenError(Exception):
+    """There was an error getting an AWS session token."""
+
+
+class UserInputError(Exception):
+    """The user failed to enter valid input in the set number of tries."""
 
 
 class AWSSessionTokenUpdater:
-    """TODO: Docgen"""
+    """Update the AWS session token for a specified user.
 
-    # region Class Attributes
-    # This is the AWS region
+    This class creates or updates a session token for a given user under a given profile in your
+    AWS credentials file.  It will also add or update the corresponding profile in your config
+    file with the appropriate data.
+
+    """
+
+    # region Private Class Attributes
+    _AWS_PROFILE_HEADING_TOKENIZED: str = "profile {profile_name}"
+    _MFA_SERIAL_NUMBER_TOKENIZED: str = "arn:aws:iam::{aws_account_id}:mfa/{user_name}"
     _REGION_KEY: str = "region"
     _OUTPUT_KEY: str = "output"
-    _PROFILE_CONST: str = "profile "
-    _MFA_SERIAL_NUMBER_TOKENIZED: str = "arn:aws:iam::{aws_account_id}:mfa/{user_name}"
-    _SECRET_HEADER: str = "{aws_account_id}.dkr.ecr.us-east-1.amazonaws.com"
     _AWS_ACCESS_KEY_ID_KEY: str = "aws_access_key_id"
     _AWS_SECRET_ACCESS_KEY_KEY: str = "aws_secret_access_key"
     _AWS_SESSION_TOKEN_KEY: str = "aws_session_token"
@@ -78,241 +111,287 @@ class AWSSessionTokenUpdater:
     _CMD_ARG_PROFILE_NAME: str = "--profile-name"
     _CMD_ARG_USERNAME: str = "username"
     _CMD_ARG_MFA_TOKEN: str = "mfa-token"
-    # endregion
 
-    # region Command Format Strings
-    # This command structure lets kubectl build the secret yaml for us and just pass it in to apply as file-like input.
-    # This is necessary for the case where we're updating an existing secret from the terminal.
     _CMD_LOCAL_FORMAT_KUBECTL_CREATE_SECRET: str = (
         "kubectl create secret docker-registry {secret_name} --docker-username=AWS "
         "--docker-password={docker_password} --docker-server={aws_account_id}.dkr.ecr."
         "us-east-1.amazonaws.com --dry-run=client -o yaml | kubectl apply -f -"
     )
-
-    # This command structure lets kubectl build the secret yaml for us and just pass it in to apply as file-like input.
+    # This command structure lets kubectl build the secret yaml for us and just pass it in to
+    # apply as file-like input.
     # This is necessary for the case where we're updating an existing secret from the terminal.
+
     _CMD_REMOTE_FORMAT_KUBECTL_CREATE_SECRET: str = (
         "kubectl create secret docker-registry {secret_name} --docker-username=AWS "
         "--docker-password={docker_password} --docker-server={aws_account_id}.dkr.ecr."
         "us-east-1.amazonaws.com --dry-run=client -o yaml | kubectl apply --kubeconfig "
         "{kubeconfig} -n {namespace} -f -"
     )
+    # This command structure lets kubectl build the secret yaml for us and just pass it in to
+    # apply as file-like input.
+    # This is necessary for the case where we're updating an existing secret from the terminal.
 
-    # This command gets a session token from AWS.
     _CMD_FORMAT_GET_SESSION_TOKEN: str = (
-        "aws sts get-session-token --serial-number {mfa_serial_number} "
+        "aws sts get-session-token --serial-number {_mfa_serial_number} "
         "--token-code {mfa_token} --duration-seconds {token_duration}"
     )
+    # This command gets a session token from AWS.
 
+    _CMD_FORMAT_GET_LOGIN_PASSWORD_TOKEN: str = (
+        "aws ecr get-login-password --profile {self.profile_name}"
+    )
+
+    # This command gets a login password based on the specified AWS security profile.
     # endregion
 
-    # region Magic Functions
+    # region Context Managers
     def __init__(
-        self,
-        aws_account_id: str = "963234657927",
-        profile_name: str = "mfa",
-        username: str = "",
-        mfa_token: str = "",
+            self,
+            aws_account_id: Optional[str] = "963234657927",
+            profile_name: Optional[str] = "mfa",
+            username: Optional[str] = None,
+            mfa_token: Optional[str] = None,
     ):
-        """TODO: Docgen"""
+        """Constructs all the necessary attributes for the AWSSessionTokenUpdater object.
 
-        # region Command Args: User-interactive inputs with defaults
+        Parameters:
+            aws_account_id: The AWS account ID to use for the token request. Default value.
+            profile_name: The profile name to enter token details under in the credentials and
+            config files.
+            username: The username to use for requesting the token.
+            mfa_token: The token provided by your MFA device.
+        """
+        # Initialize our logging
+        logging.basicConfig(level=self._cmd_args.log_level.upper())
+        logging.debug("Logging initialized.")
+
+        # region User-interactive inputs with defaults or method parameters
         self.aws_account_id: str = aws_account_id
+        self.mfa_token: str = mfa_token
         self.profile_name: str = profile_name
         self.username: str = username
-        self.mfa_token: str = mfa_token
         # endregion
 
-        # region Command Args: Non-interactive inputs with defaults
-        self.access_key_id: str = ""
-        self.config_path: str = f"{expanduser('~')}/.aws/config"
-        self.credentials_path: str = f"{expanduser('~')}/.aws/credentials"
-        self.encoding: str = "utf=8"
+        # region Non-interactive inputs with defaults
+        self.aws_config_path: str = f"{expanduser('~')}/.aws/config"
+        self.aws_credentials_path: str = f"{expanduser('~')}/.aws/credentials"
+        self.encoding: str = "utf-8"
         self.local_kubeconfig_path: str = f"{expanduser('~')}/.kube/config"
         self.local_namespace: str = "default"
         self.log_level: str = "info"
-        self.mfa_serial_number: str = ""
         self.output_format: str = "json"
-        self.rancher_kubeconfig_path: str = (
-            f"{expanduser('~')}/.kube/rancher_kubeconfig.yaml"
-        )
+        self.rancher_kubeconfig_path: str = f"{expanduser('~')}/.kube/rancher_kubeconfig.yaml"
         self.rancher_namespace: str = "systemlink-testinsights"
         self.region_name: str = "us-east-1"
-        self.secret_access_key: str = ""
         self.secret_name: str = "aws-ecr-secret"
-        self.session_token: str = ""
         self.token_duration: str = "129600"
+        self._access_key_id: str = ""
         self._cmd_args: argparse.Namespace = argparse.Namespace()
+        self._mfa_serial_number: str = ""
+        self._secret_access_key: str = ""
+        self._session_token: str = ""
         # endregion
 
+        # Process the command arguments for further assignment.
         self._process_arguments()
-        self._initialize_variables_and_input()
+
+        # Override the defaults above with anything which might've been provided as
+        # command arguments.
+        self.aws_account_id: str = self._cmd_args.aws_account_id
+        self.aws_config_path: str = self._cmd_args.config_path
+        self.aws_credentials_path: str = self._cmd_args.credentials_path
+        self.local_kubeconfig_path: str = self._cmd_args.kubeconfig_local
+        self.local_namespace: str = self._cmd_args.local_namespace
+        self.log_level: str = self._cmd_args.log_level
+        self.rancher_kubeconfig_path: str = self._cmd_args.kubeconfig
+        self.mfa_token: str = self._cmd_args.mfa_token
+        self.output_format: str = self._cmd_args.output_format
+        self.profile_name: str = self._cmd_args.profile_name
+        self.region_name: str = self._cmd_args.region_name
+        self.username: str = self._cmd_args.username
+
+        # This is the serial number for our AWS MFA service
+        self._mfa_serial_number: str = self._MFA_SERIAL_NUMBER_TOKENIZED.format(
+            aws_account_id=self.aws_account_id, user_name=self.username
+        )
 
     def __enter__(self):
-        """TODO: Docgen"""
+        """Adds support to this class for use in ``with`` statements."""
+        return self
 
     def __exit__(self, exc_type, exc_val, exc_tb):
-        """TODO: Docgen"""
+        """Logs exit values ``exc_type``, ``exc_val`` and ``exc_tb``."""
+        if exc_type:
+            logging.debug(f"exc_type: {exc_type}")
+
+        if exc_val:
+            logging.debug(f"exc_val: {exc_val}")
+
+        if exc_tb:
+            logging.debug(f"exc_tb: {exc_tb}")
 
     # endregion
 
+    # region Private Methods
     # region Initializers
     def _process_arguments(self) -> None:
-        """Processes commandline arguments."""
+        """Processes commandline arguments.
+
+        This method processes any recognized command arguments passed in by the user.
+
+        Warning::
+             This method uses the initialized instance variables defined in ``__init__()`` as
+             argument defaults.  Please ensure that all defaults are initialized prior to calling
+             this method.
+
+        Returns:
+            None
+        """
 
         parser = argparse.ArgumentParser()
         parser.add_argument(
             "--account-id",
-            dest="account_id",
+            dest="aws_account_id",
             type=str,
             default=self.aws_account_id,
-            help=f"The id of the account to get a session token for [{self.aws_account_id}].",
+            help=f"The AWS account id used for the session token request: [{self.aws_account_id}]",
         )
         parser.add_argument(
-            "--config-path",
-            dest="config_path",
+            "--aws-config-path",
+            dest="aws_config_path",
             type=str,
-            default=self.config_path,
-            help=f"The path to your AWS config file [{self.config_path}].",
+            default=self.aws_config_path,
+            help=f"The path to your AWS config file: [{self.aws_config_path}]",
         )
         parser.add_argument(
-            "--credentials-path",
-            dest="credentials_path",
+            "--aws-credentials-path",
+            dest="aws_credentials_path",
             type=str,
-            default=self.credentials_path,
-            help=f"The path to your AWS credentials file [{self.credentials_path}].",
+            default=self.aws_credentials_path,
+            help=f"The path to your AWS credentials file: [{self.aws_credentials_path}]",
         )
         parser.add_argument(
-            "--kubeconfig",
-            dest="kubeconfig",
-            type=str,
-            default=self.rancher_kubeconfig_path,
-            help=f"The path to a Rancher kubeconfig YAML file [{self.rancher_kubeconfig_path}].",
-        )
-        parser.add_argument(
-            "--kubeconfig-local",
-            dest="kubeconfig_local",
+            "--local-kubeconfig_path",
+            dest="local_kubeconfig_path",
             type=str,
             default=self.local_kubeconfig_path,
-            help=f"The path to a Rancher kubeconfig YAML file [{self.local_kubeconfig_path}].",
+            help=f"The path to a local .kube/config YAML file: [{self.local_kubeconfig_path}]",
+        )
+        parser.add_argument(
+            "--local-namespace",
+            dest="local_namespace",
+            type=str,
+            default=self.local_namespace,
+            help=f"The name of a local kubernetes namespace to use: [{self.local_namespace}]",
         )
         parser.add_argument(
             "--log-level",
             dest="log_level",
             type=str,
             default=self.log_level,
-            help=f"The logging level to use [{self.log_level}].",
-        )
-        parser.add_argument(
-            "--output-format",
-            dest="output_format",
-            type=str,
-            default=self.output_format,
-            help=f"The output format for AWS auth requests [{self.output_format}].",
-        )
-        parser.add_argument(
-            "--profile-name",
-            dest="profile_name",
-            type=str,
-            default=self.profile_name,
-            help=f"The name of the profile section to work with [{self.profile_name}].",
-        )
-        parser.add_argument(
-            "--region-name",
-            dest="region_name",
-            type=str,
-            default=self.region_name,
-            help=f"The AWS region where you wish to work [{self.region_name}].",
-        )
-        parser.add_argument(
-            "--user-name",
-            dest="username",
-            type=str,
-            default=self.username,
-            help=f"The username to supply for the token request [{self.username}].",
+            help=f"The logging level under which to run the script: [{self.log_level}]",
         )
         parser.add_argument(
             "--mfa-token",
             dest="mfa_token",
             type=str,
             default=self.mfa_token,
-            help="The MFA token supplied by your authenticator app [''].",
+            help=f"The MFA token supplied by your authenticator app: [{self.mfa_token}].",
+        )
+        parser.add_argument(
+            "--output-format",
+            dest="output_format",
+            type=str,
+            default=self.output_format,
+            help=f"The output format for AWS auth requests: [{self.output_format}]",
+        )
+        parser.add_argument(
+            "--profile-name",
+            dest="profile_name",
+            type=str,
+            default=self.profile_name,
+            help=f"The AWS credentials and config file profile name to work with: "
+                 f"[{self.profile_name}]",
+        )
+        parser.add_argument(
+            "--rancher-kubeconfig-path",
+            dest="rancher_kubeconfig_path",
+            type=str,
+            default=self.rancher_kubeconfig_path,
+            help=f"The path to a rancher kubeconfig YAML file: [{self.rancher_kubeconfig_path}]",
+        )
+        parser.add_argument(
+            "--region-name",
+            dest="region_name",
+            type=str,
+            default=self.region_name,
+            help=f"The AWS region where you wish to work: [{self.region_name}]",
+        )
+        parser.add_argument(
+            "--user-name",
+            dest="username",
+            type=str,
+            default=self.username,
+            help=f"The username to supply for the token request: [{self.username}]",
         )
 
         self._cmd_args = parser.parse_args()
 
-    def _initialize_variables_and_input(self) -> None:
-        """Sets the values of the script's globals.
-
-        Returns:
-            None
-        """
-        # Initialize our logging
-        logging.basicConfig(level=self._cmd_args.log_level.upper())
-        logging.debug("Logging initialized.")
-
-        # Front-load our variables with everything processed from the command args
-        self.aws_account_id = self._cmd_args.account_id
-        self.config_path = self._cmd_args.config_path
-        self.credentials_path = self._cmd_args.credentials_path
-        self.local_kubeconfig_path = self._cmd_args.kubeconfig_local
-        self.rancher_kubeconfig_path = self._cmd_args.kubeconfig
-        self.log_level = self._cmd_args.log_level
-        self.mfa_token = self._cmd_args.mfa_token
-        self.output_format = self._cmd_args.output_format
-        self.profile_name = self._cmd_args.profile_name
-        self.region_name = self._cmd_args.region_name
-        self.username = self._cmd_args.username
-
-        # This is the serial number for our AWS MFA service
-        mfa_serial_number = self._MFA_SERIAL_NUMBER_TOKENIZED.format(
-            aws_account_id=self.aws_account_id, user_name=self.username
-        )
-        logging.debug(f"MFA Serial Number: {mfa_serial_number}")
-
-        # Get any necessary user inputs to store to globals.
-        self._get_user_input()
-
-    def _get_user_input(self) -> None:
+    def _get_user_input(
+            self,
+            aws_account_id: Optional[str] = None,
+            profile_name: Optional[str] = None,
+            username: Optional[str] = None,
+            mfa_token: Optional[str] = None,
+    ) -> None:
         """Get input values from the user.
+
+        User input for the given properties will only be requested in cases where the property
+        has neither a default value, nor a value supplied on the commandline.
+
+        Properties:
+            aws_account_id (Optional[str]): The AWS account ID to use for the token request.
+            profile_name (Optional[str]): The profile name to enter token details under in the
+            credentials and config files.
+            username (str): The username to use for requesting the token.
+            mfa_token (str): The token provided by your MFA device.
 
         Returns:
             None
         """
 
         # region Local Functions
-        @input_looper
-        def get_aws_account_id() -> str:
-            """"""
+        @retry_on_none_or_empty
+        def _get_aws_account_id() -> str:
+            """Get the AWS account id from the user [has default]."""
             return (
-                str(input(f"Enter your AWS account Id [{self.aws_account_id}]: "))
-                or self.aws_account_id
+                    str(input(f"Enter your AWS account Id [{self.aws_account_id}]: "))
+                    or self.aws_account_id
             )
 
-        @input_looper
-        def get_profile_name() -> str:
-            """"""
+        @retry_on_none_or_empty
+        def _get_profile_name() -> str:
+            """Get the profile name from the user [has default]."""
             return (
-                str(
-                    input(
-                        f"Enter the name of the profile to modify [{self.profile_name}]: "
-                    )
-                )
-                or self.profile_name
+                    str(input(f"Enter the name of the profile to modify [{self.profile_name}]: "))
+                    or self.profile_name
             )
 
-        @input_looper
-        def get_username() -> str:
-            """"""
+        @retry_on_none_or_empty
+        def _get_username() -> str:
+            """Get the username from the user [has NO default]"""
             return str(input(f"Enter your username: "))
 
-        @input_looper
-        def get_mfa_token() -> str:
-            """"""
+        @retry_on_none_or_empty
+        def _get_mfa_token() -> str:
+            """Get the MFA token from the user [has NO default]"""
             return str(input(f"Enter your MFA token value: "))
 
         # endregion
 
+        # Get provided command arguments and intersect them with those we require values for.
+        # The difference between
+        # the provided arguments and the required ones is the set of args we need to get values for.
         sys_argv = set(sys.argv)
         input_lookup_keys = {
             self._CMD_ARG_USERNAME,
@@ -323,26 +402,55 @@ class AWSSessionTokenUpdater:
         user_provided_keys = sys_argv.intersection(input_lookup_keys)
         input_keys_to_process = list(input_lookup_keys.difference(user_provided_keys))
 
-        if self._CMD_ARG_ACCOUNT_ID in input_keys_to_process:
-            self.aws_account_id = get_aws_account_id()
+        # Get only the missing, required user input.
+        # Note: In order to support this module being imported, not just a script, we also need
+        # to filter out any
+        # commands passed in to this function by a developer.
+        if not aws_account_id:
+            if self._CMD_ARG_ACCOUNT_ID in input_keys_to_process:
+                self.aws_account_id = _get_aws_account_id([], {})
+        else:
+            self.aws_account_id = aws_account_id
 
-        self.profile_name = get_profile_name()
-        self.username = get_username()
-        self.mfa_token = get_mfa_token()
+        if not profile_name:
+            if self._CMD_ARG_PROFILE_NAME in input_keys_to_process:
+                self.profile_name = _get_profile_name([], {})
+        else:
+            self.profile_name = profile_name
+
+        if not username:
+            if self._CMD_ARG_USERNAME in input_keys_to_process:
+                self.username = _get_username([], {})
+        else:
+            self.username = username
+
+        if not mfa_token:
+            if self._CMD_ARG_MFA_TOKEN in input_keys_to_process:
+                self.mfa_token = _get_mfa_token([], {})
+        else:
+            self.mfa_token = _get_mfa_token([], {})
 
     # endregion
 
     # region Auth
-    def _get_auth(self, retry_count: int = 3):  # -> Tuple[str, str, str]
-        """Gets the AWS session token object based on your username and MFA token.
+    def _get_aws_session_token(self, retry_count: int = 3) -> None:
+        """Gets an AWS session token object.
+
+        The return object from a call to ``aws sts get_session_token`` contains the pertinent
+        data for the ~/.aws/.credentials section, specified by profile name, in the form of a
+        tuple ``(aws_secret_access_key, aws_access_key_id, aws_session_token)``.
+
+        For more information:
+            See the AWS documentation on `get_session_token`_.
 
         Args:
             retry_count (int): The number of times to retry getting the token.
 
         Returns:
-            Output (Tuple[str, str, str]): Returns the pertinent data
-                for the ~/.aws/.credentials section specified by profile name in the
-                form of a tuple(aws_secret_access_key, aws_access_key_id, aws_session_token).
+            None
+
+        .. _get_session_token:
+            https://docs.aws.amazon.com/cli/latest/reference/sts/get-session-token.html
         """
 
         # Give the user `retry_count` tries to get their token.
@@ -350,11 +458,11 @@ class AWSSessionTokenUpdater:
             try:
                 # Build and run the command to get the session token.
                 command = self._build_get_session_token_command()
-                stderr, stdout = self._run_shell_command(command)
+                stderr, stdout = self.run_shell_command(command)
 
                 # Log any errors and raise for the loop handler.
                 if stderr:
-                    logging.warning(f"Raising RetryWarning for another go")
+                    logging.debug(f"Raising RetryWarning for another go")
                     raise RetryWarning(stderr)
 
                 # All of our data is in stdout.
@@ -364,22 +472,22 @@ class AWSSessionTokenUpdater:
                     session_token_obj = json.loads(session_token_string)
 
                     # Pull out the AccessKeyId to enter into the credentials file.
-                    self.access_key_id = session_token_obj.get("Credentials", {}).get(
+                    self._access_key_id = session_token_obj.get("Credentials", {}).get(
                         "AccessKeyId", ""
                     )
-                    logging.debug(f"access_key_id: {self.access_key_id}")
+                    logging.debug(f"access_key_id: {self._access_key_id}")
 
                     # Pull out the SecretAccessKey to enter into the credentials file.
-                    self.secret_access_key = session_token_obj.get(
-                        "Credentials", {}
-                    ).get("SecretAccessKey", "")
-                    logging.debug(f"secret_access_key: {self.secret_access_key}")
+                    self._secret_access_key = session_token_obj.get("Credentials", {}).get(
+                        "SecretAccessKey", ""
+                    )
+                    logging.debug(f"secret_access_key: {self._secret_access_key}")
 
                     # Pull out the SessionToken to enter into the credentials file.
-                    self.session_token = session_token_obj.get("Credentials", {}).get(
+                    self._session_token = session_token_obj.get("Credentials", {}).get(
                         "SessionToken", ""
                     )
-                    logging.debug(f"session_token: {self.session_token}")
+                    logging.debug(f"session_token: {self._session_token}")
 
                     # We're done, so return to caller.
                     return
@@ -390,9 +498,9 @@ class AWSSessionTokenUpdater:
 
                 Use this exception to handle any command issues which only need retries.
                 """
-                logging.warning(retry_warning)
+                logging.debug(retry_warning)
                 self.mfa_token = str(
-                    input(f"Enter your MFA token value ({count - 1} tries remain): ")
+                    input(f"Invalid token value, please retry. ({count - 1} tries remain): ")
                 )
             except Exception as ex:
                 """Session Token Acquisition Loop Catch-all
@@ -408,14 +516,14 @@ class AWSSessionTokenUpdater:
 
     # region Shell Commands
     @classmethod
-    def _run_shell_command(cls, command) -> Tuple[str, str]:
-        """Run the command in the shell.
+    def run_shell_command(cls, command: str = None) -> Tuple[str, str]:
+        """Run the provided command string in the shell.
 
         Args:
-            command (str): The command to run.
+            command: The command to run.
 
         Returns:
-            (Tuple[str, str]): A tuple containing stdout and stderr.
+            A tuple in the form (stdout, stderr).
         """
         subprocess_ = subprocess.Popen(
             command, shell=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE
@@ -435,13 +543,16 @@ class AWSSessionTokenUpdater:
         """
 
         config_ = configparser.ConfigParser()
-        config_.read(self.config_path)
-        section_name = f"{self._PROFILE_CONST}{self.profile_name}"
+
+        # TODO: Check for existing config file. If not existing, then create.
+
+        config_.read(self.aws_config_path)
+        section_name = self._AWS_PROFILE_HEADING_TOKENIZED.format(profile_name=self.profile_name)
         if section_name not in config_.sections():
             config_.add_section(section_name)
         config_[section_name][self._REGION_KEY] = self.region_name
         config_[section_name][self._OUTPUT_KEY] = self.output_format
-        with open(self.config_path, "w") as config_file:
+        with open(self.aws_config_path, "w") as config_file:
             config_.write(config_file)
 
     def _build_credentials_file(self) -> None:
@@ -453,31 +564,35 @@ class AWSSessionTokenUpdater:
 
         credentials = configparser.ConfigParser()
 
-        # If the file doesn't exist, .read() will create it.
-        credentials.read(self.credentials_path)
+        # TODO: Check for existing config file. If not existing, then create.
+        # TODO: Handle permission errors on creation, write, etc. of the file.
+
+        # NOTE: If the file doesn't exist, .read() will implicitly create it when it calls
+        # `with open(...)`.
+        credentials.read(self.aws_credentials_path)
 
         if self.profile_name not in credentials.sections():
             credentials.add_section(self.profile_name)
 
-        credentials[self.profile_name][self._AWS_ACCESS_KEY_ID_KEY] = self.access_key_id
-        credentials[self.profile_name][
-            self._AWS_SECRET_ACCESS_KEY_KEY
-        ] = self.secret_access_key
-        credentials[self.profile_name][self._AWS_SESSION_TOKEN_KEY] = self.session_token
-        with open(self.credentials_path, "w") as credentials_file:
+        credentials[self.profile_name][self._AWS_ACCESS_KEY_ID_KEY] = self._access_key_id
+        credentials[self.profile_name][self._AWS_SECRET_ACCESS_KEY_KEY] = self._secret_access_key
+        credentials[self.profile_name][self._AWS_SESSION_TOKEN_KEY] = self._session_token
+        with open(self.aws_credentials_path, "w") as credentials_file:
             credentials.write(credentials_file)
 
     def _build_get_session_token_command(self) -> str:
-        """Build the command to execute.
+        """Build the ``aws sts get-session-token`` command.
+
+        For more information, see the AWS documentation on `get_session_token`_.
 
         Returns:
             (str): A formatted string version of the command to run.
-        """
 
+        .. _get_session_token:
+            https://docs.aws.amazon.com/cli/latest/reference/sts/get-session-token.html
+        """
         command = self._CMD_FORMAT_GET_SESSION_TOKEN.format(
-            mfa_serial_number=self._MFA_SERIAL_NUMBER_TOKENIZED.format(
-                aws_account_id=self.aws_account_id, user_name=self.username
-            ),
+            mfa_serial_number=self._mfa_serial_number,
             mfa_token=self.mfa_token,
             token_duration=self.token_duration,
         )
@@ -485,7 +600,7 @@ class AWSSessionTokenUpdater:
         return command
 
     def _build_secrets(self) -> None:
-        """Creates a .dockerconfigjson secret with either the local .kube/config or the provided one.
+        """Creates a .dockerconfigjson secret
 
         Returns:
             None
@@ -514,19 +629,18 @@ class AWSSessionTokenUpdater:
             )
 
     def _build_secret(
-        self, kubeconfig: str = None, namespace: str = None, encoded_pass: str = None
+            self, kubeconfig: str = None, namespace: str = None, encoded_pass: str = None
     ) -> None:
         """Builds a .dockerconfigjson secret.
 
         Args:
-            kubeconfig (str): The kubeconfig file to use (defaults to ~/.kube/config).
+            kubeconfig (str): The kubeconfig file to use [default: ~/.kube/config].
             namespace (str): The namespace in which to install the secret.
             encoded_pass (str): The base64 password to apply.
 
         Returns:
             None
         """
-
         create_secret_command = self._CMD_REMOTE_FORMAT_KUBECTL_CREATE_SECRET.format(
             secret_name=self.secret_name,
             docker_password=encoded_pass,
@@ -544,42 +658,63 @@ class AWSSessionTokenUpdater:
         logging.debug(output)
 
     # endregion
+    # endregion
 
-    # region Runner
+    # region Public Methods
     def update_session_token(
-        self,
-        account_id: str = "",
-        profile_name: str = "",
-        username: str = "",
-        mfa_token: str = "",
+            self,
+            aws_account_id: str = Optional[str],
+            profile_name: str = Optional[str],
+            username: str = None,
+            mfa_token: str = None,
     ) -> None:
-        """
+        """Request and apply a new session token.
+
+        This method's main task is to acquire a session token and use it to apply a secret to a
+        k8s namespace.
+        It does this by doing the following:
+            - Get any required values (aws-account_id, profile_name, username, mfa_token) from
+            the user.  In order
+            of precedence, defaults < formal parameters < args | input.
+            - Request a session token from aws sts get-session-token using subprocess.Popen.
+            - Build or update the specified profile section under the credentials and config files.
+              - This profile contain data which we need in order to push and pull images from our
+              AWS ECR server.
+            - Call kubectl create secret docker-registry using subprocess.Popen.
 
         Args:
-            account_id (str):
-            profile_name (str):
-            username (str):
-            mfa_token (str):
+            aws_account_id (Optional[str]): The AWS account ID to use for the token request.
+            profile_name (Optional[str]): The profile name to enter token details under in the
+            credentials and config files.
+            username (str): The username to use for requesting the token.
+            mfa_token (str): The token provided by your MFA device.
 
         Returns:
-            None:
+            None
         """
-        # TODO: Get this part, previously from main(), working
-        # _process_arguments()
-        #
-        # try:
-        #     _initialize_variables_and_input()
-        # except UserInputError:
-        #     input("Failed to obtain authorization.  Press any key to terminate.")
-        #
-        # try:
-        #     _get_auth()
-        # except SessionTokenError:
-        #     input("Failed to obtain authorization.  Press any key to terminate.")
-        #
-        # _build_credentials_file()
-        # _build_config_file()
-        # _build_secrets()
+        self._process_arguments()
+
+        try:
+            self._get_user_input(
+                aws_account_id=aws_account_id, profile_name=profile_name, username=username,
+                mfa_token=mfa_token
+            )
+        except UserInputError:
+            input("Failed to obtain authorization.  Press any key to terminate.")
+            exit(1)
+
+        try:
+            self._get_aws_session_token()
+        except SessionTokenError:
+            input("Failed to obtain authorization.  Press any key to terminate.")
+            exit(1)
+
+        self._build_credentials_file()
+        self._build_config_file()
+        self._build_secrets()
+
+        logging.debug("Script completed.")
+        print("Script execution completed.  Token successfully updated.")
 
     # endregion
 
@@ -592,22 +727,6 @@ def main() -> None:
     """
     aws_session_token_updater = AWSSessionTokenUpdater()
     aws_session_token_updater.update_session_token()
-
-    # _process_arguments()
-    #
-    # try:
-    #     _initialize_variables_and_input()
-    # except UserInputError:
-    #     input("Failed to obtain authorization.  Press any key to terminate.")
-    #
-    # try:
-    #     _get_auth()
-    # except SessionTokenError:
-    #     input("Failed to obtain authorization.  Press any key to terminate.")
-    #
-    # _build_credentials_file()
-    # _build_config_file()
-    # _build_secrets()
 
 
 if __name__ == "__main__":
