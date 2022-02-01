@@ -1,0 +1,112 @@
+sessionTokenConstants:
+  awsAccessKeyIdKey: "aws_access_key_id"
+  awsProfileHeadingTokenized: "profile {profile_name}"
+  awsSecretAccessKeyKey: "aws_secret_access_key"
+  awsSessionTokenKey: "aws_session_token"
+  mfaSerialNumberTokenized: "arn:aws:iam::{aws_account_id}:mfa/{username}"
+  outputKey: "output"
+  regionKey: "region"
+
+attributeDefaults:
+  defaultAwsAccountId: "963234657927"
+  defaultAwsConfigPath: "{user}/.aws/config"
+  defaultAwsCredentialsPath: "{user}/.aws/credentials"
+  defaultEncoding: "utf-8"
+  defaultLocalKubeconfigPath: "{user}/.kube/config"
+  defaultLocalNamespace: "default"
+  defaultLogLevel: "info"
+  defaultMfaToken: ""
+  defaultOutputFormat: "json"
+  defaultProfileName: "mfa"
+  defaultRancherKubeconfigPath: "{user}/.kube/rancher_kubeconfig.yaml"
+  defaultRancherNamespace: "systemlink-testinsights"
+  defaultRegionName: "us-east-1"
+  defaultSecretName: "aws-ecr-secret"
+  defaultTokenDuration: "129600"
+  defaultUsername: ""
+
+argumentParseConstants:
+  cmdArgScriptConfigPath:
+    key: "--script-config-path"
+    dest: "script_config_path"
+    help: "The path to the config.yaml used by the script. [{script_config_path}]"
+
+  cmdArgAwsAccountId:
+    key: "--aws-account-id"
+    dest: "aws_account_id"
+    help: "The AWS account id used for the session token request: [{aws_account_id}]"
+
+  cmdArgProfileName:
+    key: "--profile-name"
+    dest: "profile_name"
+    help: "The AWS credentials and config file profile name to work with: [{profile_name}]"
+
+  cmdArgUsername:
+    key: "--username"
+    dest: "username"
+    help: "The username to supply for the token request: [{username}]"
+
+  cmdArgMfaToken:
+    key: "--mfa-token"
+    dest: "mfa_token"
+    help: "The MFA token supplied by your authenticator app: [{mfa_token}]."
+
+  cmdArgAwsConfigPath:
+    key: "--aws-config-path"
+    dest: "aws_config_path"
+    help: "The path to your AWS config file: [{aws_config_path}]"
+
+  cmdArgAwsCredentialsPath:
+    key: "--aws-credentials-path"
+    dest: "aws_credentials_path"
+    help: "The path to your AWS credentials file: [{aws_credentials_path}]"
+
+  cmdArgLocalNamespace:
+    key: "--local-namespace"
+    dest: "local_namespace"
+    help: "The name of a local kubernetes namespace to use: [{local_namespace}]"
+
+  cmdArgLogLevel:
+    key: "--log-level"
+    dest: "log_level"
+    help: "The logging level under which to run the script: [{log_level}]"
+
+  cmdArgOutputFormat:
+    key: "--output-format"
+    dest: "output_format"
+    help: "The output format for AWS auth requests: [{output_format}]"
+
+  cmdArgKubeconfigPath:
+    key: "--kubeconfig-path"
+    dest: "kubeconfig_path"
+    help: "The path to a kubeconfig YAML file: [{kubeconfig_path}]"
+
+  cmdArgRegionName:
+    key: "--region-name"
+    dest: "region_name"
+    help: "The AWS region where you wish to work: [{region_name}]"
+
+userInputPrompts:
+  inputPromptAccountId: "Enter your AWS account Id [{aws_account_id}]: "
+  inputPromptMfaToken: "Enter your MFA token value: "
+  inputPromptProfileName: "Enter the name of the profile to modify [{profile_name}]: "
+  inputPromptUsername: "Enter your username: "
+
+shellCommands:
+  # This command structure lets kubectl build the secret yaml for us and just pass it in to
+  # apply as file-like input. This is necessary for the case where we're updating an existing
+  # secret from the terminal.
+  cmdFormatKubectlCreateSecret: >
+    kubectl create secret docker-registry {secret_name} --docker-username=AWS
+    --docker-password={docker_password} --docker-server={aws_account_id}.dkr.ecr.
+    us-east-1.amazonaws.com --dry-run=client -o yaml | kubectl apply --kubeconfig
+    {kubeconfig} -n {namespace} -f -
+
+  # This command gets a session token from AWS.
+  cmdFormatGetSessionToken: >
+    aws sts get-session-token --serial-number {mfa_serial_number}
+    --token-code {mfa_token} --duration-seconds {token_duration}
+
+  # This command gets a login password based on the specified AWS security profile.
+  cmdFormatGetLoginPasswordToken: "aws ecr get-login-password --profile {profile_name}"
+
