@@ -71,6 +71,12 @@ their experience.
 Examples
 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
 
+Get help on the script:
+
+.. code-block:: shell
+
+    python -m aws_session_token_updater.py -h
+
 Run the script from the terminal in non-interactive mode:
 
 .. code-block:: shell
