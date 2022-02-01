@@ -98,6 +98,10 @@ class UserInputError(Exception):
     """The user failed to enter valid input in the set number of tries."""
 
 
+class CancelExecutionWarning(Exception):
+    """The user has canceled the script execution."""
+
+
 class AWSSessionTokenUpdater:
     """Update the AWS session token for a specified user.
 
@@ -271,6 +275,14 @@ class AWSSessionTokenUpdater:
             )
         except UserInputError:
             input("Failed to obtain authorization.  Press any key to terminate.")
+            exit(1)
+        except CancelExecutionWarning as cxw:
+            logging.debug(cxw)
+            print("\n")
+            print("Script canceled.")
+            exit(130)
+        except Exception as ex:
+            logging.exception(ex)
             exit(1)
 
         self._mfa_serial_number: str = self._session_token_constants.get(
@@ -452,38 +464,50 @@ class AWSSessionTokenUpdater:
         @retry_on_none_or_empty
         def _get_aws_account_id() -> str:
             """Get the AWS account id from the user [has default]."""
-            user_input = str(
-                input(
-                    self._user_input_prompts.get("inputPromptAccountId", "").format(
-                        aws_account_id=self.aws_account_id
+            try:
+                user_input = str(
+                    input(
+                        self._user_input_prompts.get("inputPromptAccountId", "").format(
+                            aws_account_id=self.aws_account_id
+                        )
                     )
                 )
-            )
+            except KeyboardInterrupt:
+                raise CancelExecutionWarning()
+
             return user_input or self.aws_account_id
 
         @retry_on_none_or_empty
         def _get_profile_name() -> str:
             """Get the profile name from the user [has default]."""
-            return (
-                    str(
-                        input(
-                            self._user_input_prompts.get("inputPromptProfileName", "").format(
-                                profile_name=self.profile_name
-                            )
+            try:
+                user_input = str(
+                    input(
+                        self._user_input_prompts.get("inputPromptProfileName", "").format(
+                            profile_name=self.profile_name
                         )
                     )
-                    or self.profile_name
-            )
+                )
+            except KeyboardInterrupt:
+                raise CancelExecutionWarning()
+
+            return user_input or self.profile_name
 
         @retry_on_none_or_empty
         def _get_username() -> str:
             """Get the username from the user [has NO default]"""
-            return str(input(self._user_input_prompts.get("inputPromptUsername", "")))
+            try:
+                return str(input(self._user_input_prompts.get("inputPromptUsername", "")))
+            except KeyboardInterrupt:
+                raise CancelExecutionWarning()
 
         @retry_on_none_or_empty
         def _get_mfa_token() -> str:
             """Get the MFA token from the user [has NO default]"""
-            return str(input(self._user_input_prompts.get("inputPromptMfaToken", "")))
+            try:
+                return str(input(self._user_input_prompts.get("inputPromptMfaToken", "")))
+            except KeyboardInterrupt:
+                raise CancelExecutionWarning()
 
         # endregion
 
