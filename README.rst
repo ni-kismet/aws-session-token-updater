@@ -14,6 +14,12 @@ General
 You may use the included requirements.txt to ensure that you have all of this module's
 required python packages.
 
+.. note::
+    Installing requirements.txt into your base python library may result in changes to existing
+    packages.  You may wish to install and run this script from a python virtual environment.
+
+    It may also be necessary to run the ``pip`` command as an administrator.
+
 .. code-block:: shell
 
     pip install -r requirements.txt
@@ -35,7 +41,7 @@ Commandline usage:
 
 .. code-block:: shell
 
-        python -m aws_session_token_updater.py [
+        python -m aws_session_token_updater [
             [--account-id <id>][--aws-config-path <path>]
             [--aws-credentials-path <path>][--local-kubeconfig_path <path>]
             [--local-namespace <namespace>][--log-level <info | warning | debug |...>]
@@ -75,26 +81,26 @@ Get help on the script:
 
 .. code-block:: shell
 
-    python -m aws_session_token_updater.py -h
+    python -m aws_session_token_updater -h
 
 Run the script from the terminal in non-interactive mode:
 
 .. code-block:: shell
 
-    python -m aws_session_token_updater.py --log-level info --account-id <aws-account-id>
+    python -m aws_session_token_updater --log-level info --account-id <aws-account-id>
     --profile-name <profile-name> --user-name <username> --mfa-token <token-code> [--kubeconfig ~/.kube/rancher-kubeconfig.yaml]
 
 Run the script in fully guided mode:
 
 .. code-block:: shell
 
-    python -m aws_session_token_updater.py [--kubeconfig ~/.kube/rancher-kubeconfig.yaml]
+    python -m aws_session_token_updater [--kubeconfig ~/.kube/rancher-kubeconfig.yaml]
 
 Run the script with partial interaction:
 
 .. code-block:: shell
 
-    python -m aws_session_token_updater.py --aws-account-id <aws-account-id> --profile-name
+    python -m aws_session_token_updater --aws-account-id <aws-account-id> --profile-name
     <profile-name> [--kubeconfig ~/.kube/rancher-kubeconfig.yaml]
 
 
