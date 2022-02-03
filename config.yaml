@@ -98,9 +98,9 @@ shellCommands:
   # secret from the terminal.
   cmdFormatKubectlCreateSecret: >
     kubectl create secret docker-registry {secret_name} --docker-username=AWS
-    --docker-password={docker_password} --docker-server={aws_account_id}.dkr.ecr.
-    us-east-1.amazonaws.com --dry-run=client -o yaml | kubectl apply --kubeconfig
-    {kubeconfig} -n {namespace} -f -
+    --docker-password={docker_password} 
+    --docker-server={aws_account_id}.dkr.ecr.us-east-1.amazonaws.com 
+    --dry-run=client -o yaml | kubectl apply --kubeconfig {kubeconfig} -n {namespace} -f -
 
   # This command gets a session token from AWS.
   cmdFormatGetSessionToken: >
